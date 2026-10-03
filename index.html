@@ -182,6 +182,20 @@ input::placeholder,textarea::placeholder{color:var(--muted)}
 .cand .why{font-size:12.5px;color:var(--muted);margin:10px 4px 6px;line-height:1.35}
 .cand .acts{display:flex;gap:6px;flex-wrap:wrap;margin:8px 4px 0;align-items:center}
 
+/* dashboard */
+.sect.first{margin-top:6px}
+.sechead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-top:6px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:-10px 0 4px}
+.stat{background:var(--glass);border:1px solid var(--line);border-radius:26px;padding:16px 18px;backdrop-filter:blur(14px)}
+.stat b{font:400 38px/1 var(--display);display:block;color:var(--lav)}
+.stat span{font-size:13px;color:var(--muted)}
+.hscroll{display:flex;gap:16px;overflow-x:auto;padding:4px 2px 14px;scroll-snap-type:x proximity;scrollbar-width:none}
+.hscroll::-webkit-scrollbar{display:none}
+.hscroll .tile{flex:0 0 172px;scroll-snap-align:start}
+.qi.arrive{background:linear-gradient(135deg,rgba(184,164,255,.22),rgba(255,159,194,.18));border-color:var(--lav);box-shadow:0 10px 30px var(--glow)}
+.pc .tag.arrive{top:50px}
+@media (max-width:640px){.stats{grid-template-columns:1fr 1fr 1fr;gap:8px}.stat{padding:12px 12px}.stat b{font-size:28px}.stat span{font-size:12px}.hscroll .tile{flex-basis:150px}}
+
 /* dialogs */
 dialog{border:1px solid var(--line);border-radius:36px;background:var(--panel);color:var(--ink);padding:0;width:min(900px,96vw);max-height:94vh;box-shadow:0 40px 100px rgba(0,0,0,.5);overflow:hidden}
 dialog::backdrop{background:rgba(6,4,18,.62);backdrop-filter:blur(8px)}
@@ -452,7 +466,7 @@ function stats(show) {
 
 /* ============ state + storage ============ */
 const state = {
-  shows: [], settings: { ...DEFAULT_SETTINGS }, tab: "library", filter: "all", media: "all", genre: "", q: "", mineOnlyLib: false,
+  shows: [], settings: { ...DEFAULT_SETTINGS }, tab: "home", filter: "all", media: "all", genre: "", q: "", mineOnlyLib: false,
   detailId: null, user: null, client: null, revealed: new Set(), openSeasons: new Set(),
   discTab: "buzz", discMine: true, because: null, trend: null, buzzLoading: false, buzzError: ""
 };
@@ -471,6 +485,7 @@ function localStore() {
   };
 }
 function supaStore(client, userId) {
+  let useFlags = true;
   return {
     label: "Synced across your devices",
     async loadAll() {
@@ -480,7 +495,14 @@ function supaStore(client, userId) {
       return { shows: a.data || [], settings: b.data ? b.data.data : null };
     },
     async saveShow(s) {
-      const { error } = await client.from("shows").upsert({ id: s.id, media: s.media || "tv", tmdb_id: s.tmdb_id, status: s.status, rating: s.rating, notes: s.notes, watched: s.watched, meta: s.meta, meta_updated: s.meta_updated, added_at: s.added_at, last_watched: s.last_watched }, { onConflict: "id" });
+      const row = { id: s.id, media: s.media || "tv", tmdb_id: s.tmdb_id, status: s.status, rating: s.rating, notes: s.notes, watched: s.watched, meta: s.meta, meta_updated: s.meta_updated, added_at: s.added_at, last_watched: s.last_watched };
+      if (useFlags) row.flags = s.flags || {};
+      let { error } = await client.from("shows").upsert(row, { onConflict: "id" });
+      if (error && useFlags && /flags/i.test(error.message || "")) {
+        useFlags = false; delete row.flags;
+        ({ error } = await client.from("shows").upsert(row, { onConflict: "id" }));
+        toast("Run the updated supabase.sql in Supabase so your 'waiting' flags can sync.", 6000);
+      }
       if (error) throw error;
     },
     async deleteShow(id) { const { error } = await client.from("shows").delete().eq("id", id); if (error) throw error; },
@@ -505,7 +527,7 @@ function saveSettings() {
 const byId = id => state.shows.find(s => s.id === id);
 
 function newRow(media, tmdbId, meta, status) {
-  return { id: uid(), media, tmdb_id: tmdbId, status: status || (media === "movie" ? "want" : "watching"), rating: 0, notes: "", watched: {}, meta, meta_updated: new Date().toISOString(), added_at: new Date().toISOString(), last_watched: null };
+  return { id: uid(), media, tmdb_id: tmdbId, status: status || (media === "movie" ? "want" : "watching"), rating: 0, notes: "", watched: {}, meta, meta_updated: new Date().toISOString(), added_at: new Date().toISOString(), last_watched: null, flags: {} };
 }
 function setEp(show, s, e, on) {
   const set = new Set(show.watched[s] || []); on ? set.add(e) : set.delete(e);
@@ -537,13 +559,14 @@ function watchNext(show) {
 }
 const tracked = (media, id) => state.shows.some(s => (s.media || "tv") === media && s.tmdb_id === id);
 
-async function addShow(media, tmdbId, status, finished) {
+async function addShow(media, tmdbId, status, finished, why) {
   if (tracked(media, tmdbId)) { toast("That one's already on your list."); return null; }
   try {
     const meta = await fetchMetaFor(media, tmdbId);
     const row = newRow(media, tmdbId, meta, finished ? "completed" : status);
     if (finished && media === "tv") for (const ep of allEps(row)) if (aired(ep)) setEp(row, ep.s, ep.e, true);
     if (finished) row.last_watched = new Date().toISOString();
+    row.flags = { prov: provNames(meta), checked: new Date().toISOString(), why: why || "" };
     state.shows.push(row); persist(row); renderAll();
     toast("Added " + meta.name + " ♡");
     return row;
@@ -554,10 +577,31 @@ async function refreshShow(show, quiet) {
   try {
     const meta = await fetchMetaFor(show.media || "tv", show.tmdb_id);
     show.meta = meta; show.meta_updated = new Date().toISOString();
+    if (checkArrival(show)) toast(show.meta.name + " is now on " + show.flags.arrived.on + " ✦");
     if (!isMovie(show) && show.status === "completed" && stats(show).unwatched.length) show.status = "watching";
     persist(show);
     if (!quiet) toast("Updated " + meta.name);
   } catch (e) { console.error(e); if (!quiet) toast("Couldn't refresh " + show.meta.name); }
+}
+/* ---- waiting for a platform ---- */
+const provNames = m => ((m && m.providers && m.providers.flatrate) || []).map(p => p.name);
+const isWaiting = s => s.status === "want" && (s.flags || {}).wait !== false && avail(s).where !== "mine";
+const arrivals = () => state.shows.filter(s => s.status === "want" && s.flags && s.flags.arrived && !s.flags.arrived.seen);
+function checkArrival(show) {
+  show.flags = show.flags || {};
+  const cur = provNames(show.meta), prev = show.flags.prov;
+  show.flags.prov = cur; show.flags.checked = new Date().toISOString();
+  if (!prev || show.status !== "want" || show.flags.wait === false) return false;
+  const added = cur.filter(n => !prev.includes(n)), m = matchProviders(added.map(name => ({ name })));
+  if (!m.mine.length) return false;
+  show.flags.arrived = { on: m.mine[0], at: todayISO(), seen: false };
+  return true;
+}
+async function refreshProviders(show) {
+  const d = await tmdb("/" + (show.media || "tv") + "/" + show.tmdb_id + "/watch/providers");
+  const r = (d.results && d.results[REGION]) || {}, slim = list => (list || []).map(p => ({ id: p.provider_id, name: p.provider_name }));
+  show.meta.providers = { flatrate: slim(r.flatrate), rent: slim(r.rent), buy: slim(r.buy), link: r.link || "" };
+  const hit = checkArrival(show); persist(show); return hit;
 }
 async function refreshStale() {
   const now = Date.now();
@@ -566,14 +610,16 @@ async function refreshStale() {
     const settled = /ended|canceled|released/i.test((s.meta && s.meta.status) || "");
     return age > (settled ? 7 * 864e5 : 12 * 36e5);
   });
-  if (!stale.length) return;
-  await pool(stale, 3, s => refreshShow(s, true));
-  renderAll();
+  if (stale.length) await pool(stale, 3, s => refreshShow(s, true));
+  const watching = state.shows.filter(s => s.status === "want" && (s.flags || {}).wait !== false && !stale.includes(s) && now - new Date((s.flags || {}).checked || 0).getTime() > 12 * 36e5);
+  if (watching.length) await pool(watching, 4, async s => { if (await refreshProviders(s)) toast(s.meta.name + " is now on " + s.flags.arrived.on + " ✦", 5000); });
+  if (stale.length || watching.length) renderAll();
 }
 
 /* ============ icons + shared UI bits ============ */
 const svg = d => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + d + '</svg>';
 const ICON = {
+  home: svg('<path d="M4 11.2L12 4l8 7.2V19a1.8 1.8 0 0 1-1.8 1.8H5.8A1.8 1.8 0 0 1 4 19z"/><path d="M9.5 20.8v-6h5v6"/>'),
   library: svg('<rect x="3.5" y="3.5" width="7" height="7" rx="2.2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2.2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2.2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2.2"/>'),
   next: svg('<circle cx="12" cy="12" r="8.5"/><path d="M10.2 8.6l5 3.4-5 3.4z" fill="currentColor"/>'),
   coming: svg('<rect x="3.5" y="5" width="17" height="15" rx="3.5"/><path d="M8 3v4M16 3v4M3.5 10h17"/>'),
@@ -583,7 +629,7 @@ const ICON = {
   gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 14.5a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h0a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5h0a1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v0a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'),
   check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>')
 };
-const TABS = [["library", "Library"], ["next", "Watch next"], ["coming", "Coming up"], ["discover", "Discover"], ["services", "Services"]];
+const TABS = [["home", "Home"], ["library", "Library"], ["next", "Watch next"], ["coming", "Coming up"], ["discover", "Discover"], ["services", "Services"]];
 
 function hue(str) { let x = 0; for (const c of String(str)) x = (x * 31 + c.charCodeAt(0)) % 360; return x; }
 function artEl(name, path, size) {
@@ -628,21 +674,102 @@ function renderAll() {
   $("tabs").replaceChildren(...TABS.map(([k, l]) => h("button", { class: "dk", role: "tab", "aria-selected": String(state.tab === k), "aria-label": l, html: ICON[k] + "<span>" + l + "</span>", onclick: () => { state.tab = k; renderAll(); window.scrollTo({ top: 0 }); } })));
   const app = $("app"); app.replaceChildren();
   if (!C.TMDB_API_KEY) app.append(h("div", { class: "banner" }, "Add your free TMDB key to config.js so search and episode data work. The setup guide has the steps."));
-  ({ library: viewLibrary, next: viewNext, coming: viewComing, discover: viewDiscover, services: viewServices }[state.tab])(app);
+  ({ home: viewHome, library: viewLibrary, next: viewNext, coming: viewComing, discover: viewDiscover, services: viewServices }[state.tab])(app);
   if (store) app.append(h("div", { class: "sync" }, store.label + (state.user && state.user.email ? " as " + state.user.email : "") + ".", h("br"), "This product uses the TMDB API but is not endorsed or certified by TMDB. Streaming availability by JustWatch."));
   if ($("detailDlg").open) renderDetail();
+}
+
+
+function heroEl(f, spoil, label) {
+  const mv = isMovie(f.show), m = f.show.meta, bd = m.backdrop || m.poster;
+  const ov = spoil ? "" : (f.ep.ov || (mv ? (m.overview || "").slice(0, 220) : ""));
+  return h("div", { class: "hero", style: bd ? "--bd:url('" + poster(bd, "w780") + "')" : "" }, h("div", { class: "in" },
+    h("div", {},
+      h("div", { class: "lab" }, label),
+      h("h2", {}, m.name),
+      h("div", { class: "ep" }, epLabel(f, spoil)),
+      h("div", { class: "small" }, (mv ? "Released " : "Aired ") + fmtDate(f.ep.air) + (!mv && f.ep.rt ? ", " + runtimeText(f.ep.rt) : "")),
+      ov ? h("p", {}, ov) : null,
+      h("div", { class: "formrow", style: "margin-top:12px" }, whereChip(f.show), h("button", { class: "btn sm", onclick: () => openDetail(f.show.id) }, "Open"))),
+    h("div", { class: "orbwrap" }, h("button", { class: "orb", "aria-label": "Mark watched", html: ICON.check, onclick: () => { if (mv) toggleMovie(f.show, true); else { setEp(f.show, f.ep.s, f.ep.e, true); afterWatch(f.show, true); } } }), "Watched it")));
+}
+function waitReason(s) {
+  const a = avail(s), st = stats(s);
+  if (st.nextAir && !st.aired) return (isMovie(s) ? "Not out yet, releases " : "Premieres ") + fmtDate(st.nextAir.air);
+  if (a.other.length) return "Streaming on " + a.other.slice(0, 2).join(" and ") + " (not yours)";
+  if (a.rentbuy) return "Only to rent or buy right now";
+  return "Not streaming in Canada yet";
+}
+function secHead(title, label, fn) { return h("div", { class: "sechead" }, h("h2", { class: "sect" }, title), label ? h("button", { class: "btn sm ghost", onclick: fn }, label) : null); }
+
+/* ---------- home dashboard ---------- */
+function viewHome(app) {
+  const S = state.settings, spoil = S.spoiler, watching = state.shows.filter(s => s.status === "watching");
+  if (!state.shows.length) {
+    app.append(h("div", { class: "empty" }, h("h2", {}, "Let's set up your diary"), h("p", {}, "Add a few shows and movies and this page turns into your dashboard."),
+      h("div", { class: "actions" }, h("button", { class: "btn primary", onclick: openSearch }, "Add a show or movie"), h("button", { class: "btn", onclick: () => $("importFile").click() }, "Import my old list"))));
+    return;
+  }
+  const arr = arrivals();
+  if (arr.length) {
+    app.append(h("h2", { class: "sect first" }, "Just arrived on your services"));
+    const l = h("div", { class: "qlist" });
+    arr.forEach(s => l.append(h("div", { class: "qi arrive" }, thumbOf(s),
+      h("div", { class: "t" }, h("b", {}, s.meta.name), h("span", { class: "small" }, "Now on " + s.flags.arrived.on + " ✦ since " + fmtDate(s.flags.arrived.at)), s.flags.why ? h("div", { class: "small" }, s.flags.why) : null),
+      h("button", { class: "btn sm primary", onclick: () => openDetail(s.id) }, "Open"),
+      h("button", { class: "btn sm ghost", onclick: () => { s.flags.arrived.seen = true; persist(s); renderAll(); } }, "Dismiss"))));
+    app.append(l);
+  }
+  const { main } = buildQueue(), mn = movieNight(), pick = main[0] || mn[0];
+  if (pick) app.append(heroEl(pick, spoil, main[0] ? "Tonight" : "Movie night"));
+  else {
+    const nxt = upcomingItems()[0];
+    app.append(h("div", { class: "empty" }, h("h2", {}, "You're all caught up"), h("p", {}, nxt ? "Next up: " + nxt.show.meta.name + (isMovie(nxt.show) ? " releases " : " " + code(nxt.ep.s, nxt.ep.e) + " ") + rel(nxt.ep.air) + "." : "Nothing new is scheduled yet.")));
+  }
+  const mins = watching.reduce((n, s) => n + stats(s).unwatched.reduce((m, e) => m + (e.rt || 0), 0), 0);
+  const waitingEps = watching.reduce((n, s) => n + stats(s).unwatched.length, 0), week = upcomingItems().filter(i => daysUntil(i.ep.air) <= 7);
+  app.append(h("div", { class: "stats" }, [[waitingEps, "episodes waiting"], [Math.round(mins / 60) + "h", "of viewing queued"], [week.length, "coming this week"]].map(([n, l]) => h("div", { class: "stat" }, h("b", {}, n), h("span", {}, l)))));
+
+  const cont = watching.filter(s => { const t = stats(s); return t.unwatched.length || t.upcoming.length; }).sort((a, b) => (b.last_watched || "").localeCompare(a.last_watched || "")).slice(0, 8);
+  if (cont.length) { app.append(secHead("Continue watching", "Library", () => { state.tab = "library"; renderAll(); })); const r = h("div", { class: "hscroll" }); cont.forEach(s => r.append(tile(s))); app.append(r); }
+
+  if (week.length) {
+    app.append(secHead("This week", "Coming up", () => { state.tab = "coming"; renderAll(); }));
+    const l = h("div", { class: "qlist" });
+    week.slice(0, 5).forEach(it => l.append(h("div", { class: "qi" }, thumbOf(it.show), h("div", { class: "t" }, h("b", {}, it.show.meta.name), h("span", { class: "small" }, (isMovie(it.show) ? "Release day" : epLabel(it, spoil)) + ", " + rel(it.ep.air)), h("div", { class: "row" }, whereChip(it.show))))));
+    app.append(l);
+  }
+
+  const waiting = state.shows.filter(isWaiting).sort((a, b) => (b.rating || 0) - (a.rating || 0) || (b.added_at || "").localeCompare(a.added_at || "")).slice(0, 6);
+  if (waiting.length) {
+    app.append(secHead("Waiting for a service", "See all", () => { state.tab = "library"; state.filter = "waiting"; renderAll(); }), h("p", { class: "small", style: "margin:-6px 0 12px" }, "Saved for later. I'll flag them here the moment one reaches a service you have."));
+    const l = h("div", { class: "qlist" });
+    waiting.forEach(s => l.append(h("div", { class: "qi" }, thumbOf(s),
+      h("div", { class: "t" }, h("b", {}, s.meta.name, s.rating ? h("span", { class: "small", style: "margin-left:8px;color:var(--rose)" }, "♥".repeat(s.rating) + "♡".repeat(5 - s.rating)) : null), h("span", { class: "small" }, waitReason(s)), (s.flags && s.flags.why) ? h("div", { class: "small" }, s.flags.why) : null),
+      h("button", { class: "btn sm ghost", onclick: () => openDetail(s.id) }, "Details"))));
+    app.append(l);
+  }
+
+  const mn2 = pick && !main[0] ? mn.slice(1) : mn;
+  if (mn2.length) { app.append(secHead("Movie night", "Watch next", () => { state.tab = "next"; renderAll(); })); const l = h("div", { class: "qlist" }); mn2.slice(0, 3).forEach(it => l.append(queueItem(it, "♡", spoil))); app.append(l); }
+
+  const b = S.buzz && S.buzz.items ? S.buzz.items.filter(it => !tracked(it.mt, it.id) && matchProviders(it.flat || []).mine.length).slice(0, 4) : [];
+  if (b.length) { app.append(secHead("Buzzing on Reddit, on your services", "Discover", () => { state.tab = "discover"; renderAll(); })); const r = h("div", { class: "hscroll" }); b.forEach(it => r.append(candTile(it))); app.append(r); }
+
+  const idle = SERVICES.filter(sv => S.subs.includes(sv.key)).filter(sv => { const mine = state.shows.filter(s => (s.status === "watching" || s.status === "want") && avail(s).mine[0] === sv.label); return mine.every(s => !stats(s).unwatched.length && !stats(s).upcoming.length); });
+  if (idle.length) app.append(h("div", { class: "banner", style: "margin-top:30px" }, "Nothing is waiting on " + idle.map(x => x.label).join(" or ") + " right now. " + (idle.length === 1 ? "That's a good one" : "Those are good ones") + " to pause."));
 }
 
 /* ---------- library ---------- */
 function viewLibrary(app) {
   const inMedia = s => state.media === "all" || (s.media || "tv") === (state.media === "movies" ? "movie" : "tv");
   const pool0 = state.shows.filter(inMedia);
-  const count = k => k === "all" ? pool0.length : pool0.filter(s => s.status === k).length;
+  const count = k => k === "all" ? pool0.length : k === "waiting" ? pool0.filter(isWaiting).length : pool0.filter(s => s.status === k).length;
   const tb = h("div", { class: "toolbar" });
   tb.append(h("div", { class: "seg" }, [["all", "Everything"], ["tv", "Shows"], ["movies", "Movies"]].map(([k, l]) => h("button", { "aria-pressed": String(state.media === k), onclick: () => { state.media = k; renderAll(); } }, l))));
   app.append(tb);
   const tb2 = h("div", { class: "toolbar" });
-  [...STATUSES, ["all", "All"]].forEach(([k, l]) => tb2.append(h("button", { class: "chip", "aria-pressed": String(state.filter === k), onclick: () => { state.filter = k; renderAll(); } }, (k === "completed" && state.media === "movies" ? "Watched" : l) + " " + count(k))));
+  [["watching", "Watching"], ["want", "Want to watch"], ["waiting", "Waiting for a service"], ["completed", "Completed"], ["dropped", "Dropped"], ["all", "All"]].forEach(([k, l]) => tb2.append(h("button", { class: "chip", "aria-pressed": String(state.filter === k), onclick: () => { state.filter = k; renderAll(); } }, (k === "completed" && state.media === "movies" ? "Watched" : l) + " " + count(k))));
   const genres = [...new Set(pool0.flatMap(s => s.meta.genres))].sort();
   if (genres.length) tb2.append(h("select", { "aria-label": "Genre", onchange: e => { state.genre = e.target.value; renderWall(); } }, h("option", { value: "" }, "All genres"), genres.map(g => { const o = h("option", { value: g }, g); if (g === state.genre) o.selected = true; return o; })));
   tb2.append(h("label", { class: "check" }, h("input", { type: "checkbox", checked: state.mineOnlyLib, onchange: e => { state.mineOnlyLib = e.target.checked; renderWall(); } }), "On my services"));
@@ -655,7 +782,8 @@ function renderWall() {
   const q = norm(state.q);
   const list = state.shows.filter(s => {
     if (state.media !== "all" && (s.media || "tv") !== (state.media === "movies" ? "movie" : "tv")) return false;
-    if (state.filter !== "all" && s.status !== state.filter) return false;
+    if (state.filter === "waiting") { if (!isWaiting(s)) return false; }
+    else if (state.filter !== "all" && s.status !== state.filter) return false;
     if (state.genre && !s.meta.genres.includes(state.genre)) return false;
     if (state.mineOnlyLib && avail(s).where !== "mine") return false;
     if (q && !norm(s.meta.name + " " + s.meta.cast.map(c => c.name).join(" ") + " " + s.meta.genres.join(" ")).includes(q)) return false;
@@ -687,6 +815,8 @@ function tile(show) {
     sub = st.nextAir ? code(st.nextAir.s, st.nextAir.e) + " " + rel(st.nextAir.air) : st.next ? "Next: " + code(st.next.s, st.next.e) : st.ended ? "Ended" : "No date yet";
     right = ring(st.aired ? Math.round(st.watched / st.aired * 100) : 0);
   }
+  const arr = show.flags && show.flags.arrived && !show.flags.arrived.seen && show.status === "want";
+  if (arr) pc.append(h("span", { class: "tag hot arrive" }, "Now on " + show.flags.arrived.on + " ✦"));
   pc.append(h("div", { class: "pc-info" }, h("div", { class: "tx" }, h("b", {}, m.name), h("small", {}, sub)), right));
   const under = h("div", { class: "under" }, mv && state.media === "all" ? h("span", { class: "tag" }, "Movie") : null, whereChip(show));
   return h("article", { class: "tile" },
@@ -749,16 +879,7 @@ function viewNext(app) {
   if (!main.length) {
     app.append(h("div", { class: "empty" }, h("h2", {}, "You're all caught up"), h("p", {}, S.minutes ? "Nothing short enough right now. Try a longer slot." : "New episodes will land here as they air.")));
   } else {
-    const f = main[0], ov = (!spoil && f.ep.ov) ? f.ep.ov : "", bd = f.show.meta.backdrop || f.show.meta.poster;
-    app.append(h("div", { class: "hero", style: bd ? "--bd:url('" + poster(bd, "w780") + "')" : "" }, h("div", { class: "in" },
-      h("div", {},
-        h("div", { class: "lab" }, "Up next"),
-        h("h2", {}, f.show.meta.name),
-        h("div", { class: "ep" }, epLabel(f, spoil)),
-        h("div", { class: "small" }, "Aired " + fmtDate(f.ep.air) + (f.ep.rt ? ", " + runtimeText(f.ep.rt) : "")),
-        ov ? h("p", {}, ov) : null,
-        h("div", { class: "formrow", style: "margin-top:12px" }, whereChip(f.show), h("button", { class: "btn sm", onclick: () => openDetail(f.show.id) }, "Open show"))),
-      h("div", { class: "orbwrap" }, h("button", { class: "orb", "aria-label": "Mark watched", html: ICON.check, onclick: () => { setEp(f.show, f.ep.s, f.ep.e, true); afterWatch(f.show, true); } }), "Watched it"))));
+    app.append(heroEl(main[0], spoil, "Up next"));
     if (main.length > 1) {
       app.append(h("h2", { class: "sect" }, "Then"));
       const list = h("div", { class: "qlist" }); main.slice(1).forEach((it, i) => list.append(queueItem(it, i + 2, spoil))); app.append(list);
@@ -952,7 +1073,7 @@ function candTile(it) {
   const pc = h("div", { class: "pc" }, artEl(it.name, it.poster), h("span", { class: "tag" }, it.mt === "movie" ? "Movie" : "Show"),
     h("div", { class: "pc-info" }, h("div", { class: "tx" }, h("b", {}, it.name), h("small", {}, it.year || ""))));
   return h("article", { class: "tile cand" }, pc, h("div", { class: "why" }, it.note || ""),
-    h("div", { class: "acts" }, chipsFor(m), h("button", { class: "btn sm primary", onclick: async e => { e.target.disabled = true; const r = await addShow(it.mt, it.id, "want"); if (!r) e.target.disabled = false; } }, "+ Want to watch")));
+    h("div", { class: "acts" }, chipsFor(m), h("button", { class: "btn sm primary", onclick: async e => { e.target.disabled = true; const r = await addShow(it.mt, it.id, "want", false, it.note); if (!r) e.target.disabled = false; } }, "+ Want to watch")));
 }
 function viewDiscover(app) {
   const tabs = [["buzz", "Reddit buzz"], ["trend", "Trending this week"], ["because", "Because you liked"]];
@@ -992,6 +1113,7 @@ function openDetail(id) {
   state.detailId = id;
   const show = byId(id), st = stats(show), def = st.next && !isMovie(show) ? st.next.s : (show.meta.seasons.length ? show.meta.seasons[show.meta.seasons.length - 1].n : 1);
   state.openSeasons = new Set([id + ":" + def]);
+  if (show.flags && show.flags.arrived && !show.flags.arrived.seen) { show.flags.arrived.seen = true; persist(show); }
   renderDetail(); const d = $("detailDlg"); if (!d.open) d.showModal();
 }
 function renderDetail() {
@@ -1040,13 +1162,16 @@ function renderDetail() {
   const summary = mv ? m.overview : (spoil && st.watched === 0 ? "Spoiler-safe mode is on, so the full synopsis is hidden until you've started." : m.overview);
   const body = h("div", { class: "dbody", style: bd },
     h("div", { class: "dhero" }),
+    (show.status === "want" && show.flags && show.flags.arrived) ? h("div", { class: "banner" }, "Now on " + show.flags.arrived.on + " since " + fmtDate(show.flags.arrived.at) + " ✦ ready when you are.") : null,
     h("div", { class: "detail-top" },
       h("div", { class: "pc" }, artEl(m.name, m.poster, "w500")),
       h("div", {},
         h("h2", {}, m.name), mv && m.tagline ? h("p", { class: "tagline" }, m.tagline) : null, meta,
         h("div", { class: "formrow" },
           h("select", { "aria-label": "Status", onchange: e => set({ status: e.target.value }) }, statusList(show).map(([k, l]) => { const o = h("option", { value: k }, l); if (k === show.status) o.selected = true; return o; })),
-          hearts(show.rating || 0, n => set({ rating: n }))),
+          h("span", { class: "small" }, show.status === "want" ? "How much I want it" : "My rating"), hearts(show.rating || 0, n => set({ rating: n }))),
+        show.status === "want" ? h("label", { class: "check", style: "margin-top:12px" }, h("input", { type: "checkbox", checked: (show.flags || {}).wait !== false, onchange: e => { show.flags = show.flags || {}; show.flags.wait = e.target.checked; persist(show); renderAll(); } }), "Tell me when it's on my services") : null,
+        (show.flags && show.flags.why) ? h("div", { class: "small", style: "margin-top:8px" }, "Why it's here: " + show.flags.why) : null,
         mv ? h("div", { class: "formrow", style: "margin-top:12px" }, h("button", { class: "btn primary", onclick: () => toggleMovie(show, !done) }, done ? "Watched ♡ (tap to undo)" : "✓ Mark as watched")) : null,
         h("p", {}, summary),
         h("div", { class: "small" }, (mv ? "" : st.watched + " of " + st.aired + " aired episodes watched") + (m.creators.length ? (mv ? "Directed by " : ", created by ") + m.creators.join(" & ") : "")),
@@ -1166,7 +1291,7 @@ function showLogin(client) {
 function normalizeRow(r) {
   const media = r.media === "movie" ? "movie" : "tv";
   return { id: r.id, media, tmdb_id: r.tmdb_id, status: r.status || (media === "movie" ? "want" : "watching"), rating: r.rating || 0, notes: r.notes || "", watched: r.watched && typeof r.watched === "object" ? r.watched : {},
-    meta: r.meta && (media === "movie" || r.meta.seasons) ? r.meta : null, meta_updated: r.meta_updated, added_at: r.added_at, last_watched: r.last_watched };
+    meta: r.meta && (media === "movie" || r.meta.seasons) ? r.meta : null, meta_updated: r.meta_updated, added_at: r.added_at, last_watched: r.last_watched, flags: r.flags && typeof r.flags === "object" ? r.flags : {} };
 }
 async function boot() {
   $("addBtn").onclick = openSearch; $("setBtn").onclick = () => openSettings();
