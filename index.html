@@ -80,6 +80,7 @@ main{padding:24px 20px 150px}
 .dk[aria-selected="true"]{background:var(--accent);color:var(--on-accent);box-shadow:0 6px 20px var(--glow)}
 .dk[aria-selected="true"] span{display:inline}
 @media (min-width:720px){.dk span{display:inline}.dk{padding:10px 18px}}
+@media (max-width:420px){.dk{padding:10px 11px}.dock{gap:2px;padding:5px}}
 
 /* toolbar */
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:4px 0 14px}
@@ -221,6 +222,7 @@ dialog[open]{display:flex;flex-direction:column}
 .cast em{font-style:normal;color:var(--muted)}
 .note{min-height:96px;border-radius:22px;line-height:1.5}
 .season{background:var(--glass);border:1px solid var(--line);border-radius:26px;margin-bottom:10px;overflow:hidden}
+.season>summary b{font-weight:700}
 .season>summary{list-style:none;cursor:pointer;display:flex;gap:10px;align-items:center;justify-content:space-between;padding:14px 18px;font-weight:700;flex-wrap:wrap}
 .season>summary::-webkit-details-marker{display:none}
 .eps{border-top:1px solid var(--line)}
@@ -371,7 +373,7 @@ const SERVICES = [
 ];
 const STATUSES = [["watching", "Watching"], ["want", "Want to watch"], ["completed", "Completed"], ["dropped", "Dropped"]];
 const MOVIE_STATUSES = [["want", "Want to watch"], ["completed", "Watched"], ["dropped", "Skipped"]];
-const DEFAULT_SETTINGS = { subs: ["netflix", "disney", "crave", "prime"], spoiler: false, mode: "smart", onlyMine: true, minutes: 0, buzz: null };
+const DEFAULT_SETTINGS = { subs: ["netflix", "disney", "crave", "prime"], spoiler: false, mode: "smart", onlyMine: true, minutes: 0, buzz: null, mcu: { w: {}, off: ["hulu"], started: false } };
 const isMovie = s => s.media === "movie";
 
 function matchProviders(flat) {
@@ -468,7 +470,7 @@ function stats(show) {
 const state = {
   shows: [], settings: { ...DEFAULT_SETTINGS }, tab: "home", filter: "all", media: "all", genre: "", q: "", mineOnlyLib: false,
   detailId: null, user: null, client: null, revealed: new Set(), openSeasons: new Set(),
-  discTab: "buzz", discMine: true, because: null, trend: null, buzzLoading: false, buzzError: ""
+  mcu: null, mcuLoading: false, mcuAll: false, mcuCount: 25, discTab: "buzz", discMine: true, because: null, trend: null, buzzLoading: false, buzzError: ""
 };
 let store = null;
 
@@ -627,9 +629,10 @@ const ICON = {
   services: svg('<rect x="3.5" y="6.5" width="17" height="12" rx="3"/><path d="M8.5 3.5L12 6.5l3.5-3"/>'),
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
   gear: svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 14.5a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3h0a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5h0a1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8v0a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>'),
+  marvel: svg('<path d="M12 3.5l2.4 5 5.4.7-4 3.8 1 5.4L12 15.7 7.2 18.4l1-5.4-4-3.8 5.4-.7z"/>'),
   check: svg('<path d="M5 12.5l4.5 4.5L19 7.5"/>')
 };
-const TABS = [["home", "Home"], ["library", "Library"], ["next", "Watch next"], ["coming", "Coming up"], ["discover", "Discover"], ["services", "Services"]];
+const TABS = [["home", "Home"], ["library", "Library"], ["next", "Watch next"], ["marvel", "Marvel"], ["coming", "Coming up"], ["discover", "Discover"], ["services", "Services"]];
 
 function hue(str) { let x = 0; for (const c of String(str)) x = (x * 31 + c.charCodeAt(0)) % 360; return x; }
 function artEl(name, path, size) {
@@ -674,7 +677,7 @@ function renderAll() {
   $("tabs").replaceChildren(...TABS.map(([k, l]) => h("button", { class: "dk", role: "tab", "aria-selected": String(state.tab === k), "aria-label": l, html: ICON[k] + "<span>" + l + "</span>", onclick: () => { state.tab = k; renderAll(); window.scrollTo({ top: 0 }); } })));
   const app = $("app"); app.replaceChildren();
   if (!C.TMDB_API_KEY) app.append(h("div", { class: "banner" }, "Add your free TMDB key to config.js so search and episode data work. The setup guide has the steps."));
-  ({ home: viewHome, library: viewLibrary, next: viewNext, coming: viewComing, discover: viewDiscover, services: viewServices }[state.tab])(app);
+  ({ home: viewHome, marvel: viewMarvel, library: viewLibrary, next: viewNext, coming: viewComing, discover: viewDiscover, services: viewServices }[state.tab])(app);
   if (store) app.append(h("div", { class: "sync" }, store.label + (state.user && state.user.email ? " as " + state.user.email : "") + ".", h("br"), "This product uses the TMDB API but is not endorsed or certified by TMDB. Streaming availability by JustWatch."));
   if ($("detailDlg").open) renderDetail();
 }
@@ -705,7 +708,7 @@ function secHead(title, label, fn) { return h("div", { class: "sechead" }, h("h2
 /* ---------- home dashboard ---------- */
 function viewHome(app) {
   const S = state.settings, spoil = S.spoiler, watching = state.shows.filter(s => s.status === "watching");
-  if (!state.shows.length) {
+  if (!state.shows.length && !mcuS().started) {
     app.append(h("div", { class: "empty" }, h("h2", {}, "Let's set up your diary"), h("p", {}, "Add a few shows and movies and this page turns into your dashboard."),
       h("div", { class: "actions" }, h("button", { class: "btn primary", onclick: openSearch }, "Add a show or movie"), h("button", { class: "btn", onclick: () => $("importFile").click() }, "Import my old list"))));
     return;
@@ -730,8 +733,17 @@ function viewHome(app) {
   const waitingEps = watching.reduce((n, s) => n + stats(s).unwatched.length, 0), week = upcomingItems().filter(i => daysUntil(i.ep.air) <= 7);
   app.append(h("div", { class: "stats" }, [[waitingEps, "episodes waiting"], [Math.round(mins / 60) + "h", "of viewing queued"], [week.length, "coming this week"]].map(([n, l]) => h("div", { class: "stat" }, h("b", {}, n), h("span", {}, l)))));
 
-  const cont = watching.filter(s => { const t = stats(s); return t.unwatched.length || t.upcoming.length; }).sort((a, b) => (b.last_watched || "").localeCompare(a.last_watched || "")).slice(0, 8);
+  const cont = watching.filter(s => stats(s).unwatched.length).sort((a, b) => (b.last_watched || "").localeCompare(a.last_watched || "")).slice(0, 8);
   if (cont.length) { app.append(secHead("Continue watching", "Library", () => { state.tab = "library"; renderAll(); })); const r = h("div", { class: "hscroll" }); cont.forEach(s => r.append(tile(s))); app.append(r); }
+  const caught = watching.filter(s => !stats(s).unwatched.length);
+  if (caught.length) app.append(h("p", { class: "small", style: "margin:2px 0 8px" }, "Caught up on " + caught.map(s => { const t = stats(s); return s.meta.name + (t.nextAir ? " (next " + rel(t.nextAir.air) + ")" : ""); }).join(", ") + "."));
+  const mc = mcuNext();
+  if (mc && mc.next && mcuS().started) {
+    const u = mc.next, it = u.it;
+    app.append(secHead("Marvel watch-through", "Open", () => { state.tab = "marvel"; renderAll(); }));
+    app.append(h("div", { class: "qi" }, thumb(it.title, it.poster), h("div", { class: "t" }, h("b", {}, u ? it.title : "All caught up"), h("span", { class: "small" }, (u.kind === "m" ? "Movie" : code(u.s, u.e) + (u.name ? " — " + u.name : "")) + " · " + mc.done + " of " + mc.total + " watched")),
+      h("button", { class: "btn sm primary", onclick: () => { mcuSetUnit(u, true); saveSettings(); renderAll(); } }, "✓ Watched")));
+  }
 
   if (week.length) {
     app.append(secHead("This week", "Coming up", () => { state.tab = "coming"; renderAll(); }));
@@ -758,6 +770,175 @@ function viewHome(app) {
 
   const idle = SERVICES.filter(sv => S.subs.includes(sv.key)).filter(sv => { const mine = state.shows.filter(s => (s.status === "watching" || s.status === "want") && avail(s).mine[0] === sv.label); return mine.every(s => !stats(s).unwatched.length && !stats(s).upcoming.length); });
   if (idle.length) app.append(h("div", { class: "banner", style: "margin-top:30px" }, "Nothing is waiting on " + idle.map(x => x.label).join(" or ") + " right now. " + (idle.length === 1 ? "That's a good one" : "Those are good ones") + " to pause."));
+}
+
+
+/* ============ marvel watch-through ============ */
+const MCU_LIST = [
+  ["m","Iron Man",2008,"core"],["m","The Incredible Hulk",2008,"core"],["m","Iron Man 2",2010,"core"],["m","Thor",2011,"core"],["m","Captain America: The First Avenger",2011,"core"],["m","The Avengers",2012,"core"],
+  ["m","Iron Man 3",2013,"core"],["m","Thor: The Dark World",2013,"core"],["m","Captain America: The Winter Soldier",2014,"core"],["m","Guardians of the Galaxy",2014,"core"],["m","Avengers: Age of Ultron",2015,"core"],["m","Ant-Man",2015,"core"],
+  ["m","Captain America: Civil War",2016,"core"],["m","Doctor Strange",2016,"core"],["m","Guardians of the Galaxy Vol. 2",2017,"core"],["m","Spider-Man: Homecoming",2017,"core"],["m","Thor: Ragnarok",2017,"core"],["m","Black Panther",2018,"core"],
+  ["m","Avengers: Infinity War",2018,"core"],["m","Ant-Man and the Wasp",2018,"core"],["m","Captain Marvel",2019,"core"],["m","Avengers: Endgame",2019,"core"],["m","Spider-Man: Far From Home",2019,"core"],
+  ["m","Black Widow",2021,"core"],["m","Shang-Chi and the Legend of the Ten Rings",2021,"core"],["m","Eternals",2021,"core"],["m","Spider-Man: No Way Home",2021,"core"],["m","Doctor Strange in the Multiverse of Madness",2022,"core"],
+  ["m","Werewolf by Night",2022,"core"],["m","Thor: Love and Thunder",2022,"core"],["m","The Guardians of the Galaxy Holiday Special",2022,"core"],["m","Black Panther: Wakanda Forever",2022,"core"],
+  ["m","Ant-Man and the Wasp: Quantumania",2023,"core"],["m","Guardians of the Galaxy Vol. 3",2023,"core"],["m","The Marvels",2023,"core"],["m","Deadpool & Wolverine",2024,"core"],
+  ["m","Captain America: Brave New World",2025,"core"],["m","Thunderbolts*",2025,"core"],["m","The Fantastic Four: First Steps",2025,"core"],["m","The Punisher: One Last Kill",2026,"core"],["m","Spider-Man: Brand New Day",2026,"core"],["m","Avengers: Doomsday",2026,"core"],
+  ["t","WandaVision",2021,"core"],["t","The Falcon and the Winter Soldier",2021,"core"],["t","Loki",2021,"core"],["t","Hawkeye",2021,"core"],["t","Moon Knight",2022,"core"],["t","Ms. Marvel",2022,"core"],["t","She-Hulk: Attorney at Law",2022,"core"],
+  ["t","Secret Invasion",2023,"core"],["t","Echo",2024,"core"],["t","Agatha All Along",2024,"core"],["t","Daredevil: Born Again",2025,"core"],["t","Ironheart",2025,"core"],["t","Wonder Man",2026,"core"],["t","VisionQuest",2026,"core"],
+  ["t","What If...?",2021,"animated"],["t","X-Men '97",2024,"animated"],["t","Your Friendly Neighborhood Spider-Man",2025,"animated"],["t","Eyes of Wakanda",2025,"animated"],["t","Marvel Zombies",2025,"animated"],
+  ["t","Agents of S.H.I.E.L.D.",2013,"shield"],["t","Agent Carter",2015,"shield"],["t","Inhumans",2017,"shield"],
+  ["t","Daredevil",2015,"netflix"],["t","Jessica Jones",2015,"netflix"],["t","Luke Cage",2016,"netflix"],["t","Iron Fist",2017,"netflix"],["t","The Defenders",2017,"netflix"],["t","The Punisher",2017,"netflix"],
+  ["t","Runaways",2017,"hulu"],["t","Cloak & Dagger",2018,"hulu"],["t","Helstrom",2020,"hulu"]
+];
+const MCU_GROUPS = [["core", "Films & Disney+ series"], ["animated", "Animated series"], ["shield", "Agents of S.H.I.E.L.D. & friends"], ["netflix", "Netflix Defenders"], ["hulu", "Hulu series"]];
+const MCU_KEY = "mcu-cache-v1";
+const mcuS = () => { const S = state.settings; if (!S.mcu || typeof S.mcu !== "object") S.mcu = {}; S.mcu.w = S.mcu.w || {}; S.mcu.off = S.mcu.off || []; return S.mcu; };
+function mcuRead() { try { const c = JSON.parse(localStorage.getItem(MCU_KEY) || "null"); return c && c.v === 1 && Array.isArray(c.items) ? c : null; } catch (e) { return null; } }
+async function mcuFetchEntry(e, knownId) {
+  const [k, title, year, g] = e; let id = knownId;
+  if (!id) {
+    const r = await tmdb(k === "m" ? "/search/movie" : "/search/tv", k === "m" ? { query: title, year } : { query: title, first_air_date_year: year });
+    const list = r.results || [], exact = list.filter(x => norm(x.title || x.name) === norm(title));
+    id = ((exact[0] || list[0]) || {}).id;
+  }
+  if (!id) return null;
+  const names = d => ((d["watch/providers"] && d["watch/providers"].results && d["watch/providers"].results[REGION] && d["watch/providers"].results[REGION].flatrate) || []).map(p => p.provider_name);
+  if (k === "m") {
+    const d = await tmdb("/movie/" + id, { append_to_response: "watch/providers" });
+    return { key: "m:" + id, k, id, g, title: d.title || title, year: (d.release_date || "").slice(0, 4), poster: d.poster_path || "", rt: d.runtime || 0, date: d.release_date || "", prov: names(d), eps: [] };
+  }
+  const d = await tmdb("/tv/" + id, { append_to_response: "watch/providers" });
+  const sl = (d.seasons || []).filter(s => s.season_number > 0);
+  const sd = await Promise.all(sl.map(s => tmdb("/tv/" + id + "/season/" + s.season_number).catch(() => null)));
+  const eps = sd.flatMap((x, i) => ((x && x.episodes) || []).map(ep => ({ s: sl[i].season_number, e: ep.episode_number, n: ep.name || "", d: ep.air_date || "", rt: ep.runtime || 0 })));
+  return { key: "t:" + id, k, id, g, title: d.name || title, year: (d.first_air_date || "").slice(0, 4), poster: d.poster_path || "", rt: (d.episode_run_time && d.episode_run_time[0]) || 0, date: d.first_air_date || "", prov: names(d), eps };
+}
+async function mcuLoad(force) {
+  if (state.mcuLoading) return;
+  const c = state.mcu || mcuRead(); if (c && !state.mcu) state.mcu = c;
+  if (c && !force && Date.now() - c.at < 7 * 864e5 && c.listV === MCU_LIST.length) return;
+  if (!C.TMDB_API_KEY) return;
+  state.mcuLoading = true; let n = 0; if (state.tab === "marvel") renderAll();
+  const known = new Map(((c && c.items) || []).map(x => [x.g + "|" + x.title, x.id]));
+  const res = await pool(MCU_LIST, 6, async (e, i) => {
+    let out = null; try { out = await mcuFetchEntry(e, null); } catch (err) { out = null; }
+    n++; const el = $("mcuProg"); if (el) el.textContent = n + " of " + MCU_LIST.length;
+    return out;
+  });
+  const items = res.filter(Boolean), missing = MCU_LIST.filter((e, i) => !res[i]).map(e => e[1]);
+  if (!items.length && c) { state.mcuLoading = false; renderAll(); return; }
+  state.mcu = { v: 1, at: Date.now(), listV: MCU_LIST.length, items, missing };
+  try { localStorage.setItem(MCU_KEY, JSON.stringify(state.mcu)); } catch (err) { /* storage full */ }
+  state.mcuLoading = false; renderAll();
+}
+function mcuUnits() {
+  if (!state.mcu) return [];
+  const off = mcuS().off, units = [];
+  for (const it of state.mcu.items) {
+    if (off.includes(it.g)) continue;
+    if (it.k === "m") { if (it.date) units.push({ it, kind: "m", date: it.date, rt: it.rt }); }
+    else for (const ep of it.eps) if (ep.d) units.push({ it, kind: "e", s: ep.s, e: ep.e, name: ep.n, date: ep.d, rt: ep.rt || it.rt || 45 });
+  }
+  units.sort((a, b) => a.date.localeCompare(b.date) || (a.kind === "m" ? 0 : 1) - (b.kind === "m" ? 0 : 1) || a.it.title.localeCompare(b.it.title) || (a.s || 0) - (b.s || 0) || (a.e || 0) - (b.e || 0));
+  return units;
+}
+function mcuIsW(u) {
+  const w = mcuS().w;
+  if (u.kind === "m") return !!w["m:" + u.it.id];
+  const o = w["t:" + u.it.id]; return !!(o && o[u.s] && o[u.s].includes(u.e));
+}
+function mcuSetUnit(u, on) {
+  const w = mcuS().w; mcuS().started = true;
+  if (u.kind === "m") { if (on) w["m:" + u.it.id] = 1; else delete w["m:" + u.it.id]; return; }
+  const k = "t:" + u.it.id, o = w[k] || (w[k] = {}), set = new Set(o[u.s] || []);
+  if (on) set.add(u.e); else set.delete(u.e);
+  if (set.size) o[u.s] = [...set].sort((a, b) => a - b); else delete o[u.s];
+  if (!Object.keys(o).length) delete w[k];
+}
+const mcuReleased = u => u.date <= todayISO();
+function mcuMark(list, on) { list.forEach(u => { if (!on || mcuReleased(u)) mcuSetUnit(u, on); }); saveSettings(); renderAll(); }
+function mcuRuns(units) {
+  const runs = [];
+  for (const u of units) { const r = runs[runs.length - 1]; if (r && u.kind === "e" && r.it === u.it) r.units.push(u); else runs.push({ it: u.it, kind: u.kind, units: [u] }); }
+  return runs;
+}
+function mcuNext() {
+  const units = mcuUnits(); if (!units.length) return null;
+  const rel0 = units.filter(mcuReleased), done = rel0.filter(mcuIsW).length;
+  return { units, next: rel0.find(u => !mcuIsW(u)) || null, done, total: rel0.length };
+}
+const mcuLabel = u => u.kind === "m" ? u.it.title : u.it.title + " " + code(u.s, u.e);
+function mcuRange(run) {
+  const a = run.units[0], b = run.units[run.units.length - 1];
+  if (run.kind === "m") return "";
+  if (a === b) return code(a.s, a.e);
+  return a.s === b.s ? code(a.s, a.e) + "–E" + b.e : code(a.s, a.e) + "–" + code(b.s, b.e);
+}
+function mcuRunEl(run, units) {
+  const it = run.it, rel1 = run.units.filter(mcuReleased), wc = rel1.filter(mcuIsW).length, allDone = rel1.length && wc === rel1.length;
+  const first = run.units[0], upcoming = !mcuReleased(first), idx0 = units.indexOf(first);
+  const chip = chipsFor(matchProviders((it.prov || []).map(name => ({ name }))));
+  const dateTxt = run.kind === "m" ? fmtDate(first.date) + (it.rt ? ", " + runtimeText(it.rt) : "") : fmtDate(first.date) + (run.units.length > 1 ? " to " + fmtDate(run.units[run.units.length - 1].date) : "");
+  const before = () => mcuMark(units.slice(0, idx0 + run.units.length), true);
+  if (run.kind === "m") {
+    return h("div", { class: "qi" + (upcoming ? " dim" : "") }, thumb(it.title, it.poster),
+      h("div", { class: "t" }, h("b", {}, it.title), h("span", { class: "small" }, upcoming ? "Out " + dateTxt : dateTxt), h("div", { class: "row" }, chip)),
+      h("button", { class: "btn sm ghost", title: "Mark this and everything before it watched", disabled: upcoming, onclick: before }, "All before"),
+      h("button", { class: "btn sm" + (allDone ? " primary" : ""), disabled: upcoming, "aria-label": "Mark " + it.title + " watched", html: ICON.check, onclick: () => mcuMark([first], !allDone) }));
+  }
+  const det = h("details", { class: "season" + (upcoming ? " dim" : "") });
+  det.append(h("summary", {}, h("span", { style: "display:flex;gap:12px;align-items:center;min-width:0" }, thumb(it.title, it.poster),
+    h("span", {}, h("b", {}, it.title), h("br"), h("span", { class: "small" }, mcuRange(run) + ", " + (upcoming ? "starts " : "") + dateTxt))),
+    h("span", { class: "formrow" }, upcoming ? h("span", { class: "tag" }, "Not out yet") : h("span", { class: "tag" + (allDone ? " ok" : "") }, wc + "/" + rel1.length),
+      !upcoming ? h("button", { class: "btn sm", onclick: ev => { ev.preventDefault(); mcuMark(run.units, !allDone); } }, allDone ? "Clear" : "Mark stretch watched") : null)));
+  let built = false;
+  det.addEventListener("toggle", () => {
+    if (!det.open || built) return; built = true;
+    const list = h("div", { class: "eps" });
+    list.append(h("div", { style: "padding:10px 16px;border-bottom:1px solid var(--line)" }, chip, " ", h("button", { class: "btn sm ghost", onclick: before }, "Mark everything up to the end of this stretch watched")));
+    run.units.forEach(u => { const w = mcuIsW(u), ok = mcuReleased(u);
+      list.append(h("div", { class: "ep" + (ok ? "" : " future") },
+        h("button", { class: "tick", role: "checkbox", "aria-checked": String(w), "aria-label": code(u.s, u.e) + " watched", disabled: !ok, html: ICON.check, onclick: e => { mcuSetUnit(u, !w); saveSettings(); e.currentTarget.setAttribute("aria-checked", String(!w)); } }),
+        h("div", {}, h("div", { class: "nm" }, code(u.s, u.e) + (u.name && !state.settings.spoiler ? " — " + u.name : "")), h("div", { class: "small" }, ok ? fmtDate(u.date) : "Airs " + fmtDate(u.date))), h("span"))); });
+    det.append(list);
+  });
+  return det;
+}
+function viewMarvel(app) {
+  const S = mcuS();
+  app.append(h("p", { class: "explain" }, "Every Marvel movie and series in exact release order, with episodes slotted in between the films the way they originally aired."));
+  if (!state.mcu && !state.mcuLoading) setTimeout(() => mcuLoad(false), 0);
+  if (!state.mcu) { app.append(h("div", { class: "empty" }, h("h2", {}, "Loading the MCU"), h("p", {}, "First time only. Fetching release dates and episodes, ", h("span", { id: "mcuProg" }, "starting…")))); return; }
+  if (!state.mcuLoading && (Date.now() - state.mcu.at > 7 * 864e5 || state.mcu.listV !== MCU_LIST.length)) setTimeout(() => mcuLoad(false), 0);
+  const bar = h("div", { class: "toolbar" });
+  MCU_GROUPS.forEach(([k, l]) => bar.append(h("button", { class: "chip", "aria-pressed": String(!S.off.includes(k)), onclick: () => { S.off = S.off.includes(k) ? S.off.filter(x => x !== k) : [...S.off, k]; saveSettings(); renderAll(); } }, l)));
+  app.append(bar);
+  const units = mcuUnits(), released = units.filter(mcuReleased), done = released.filter(mcuIsW).length, left = released.filter(u => !mcuIsW(u));
+  const hrs = Math.round(left.reduce((n, u) => n + (u.rt || 0), 0) / 60);
+  app.append(h("div", { class: "stats" }, [[done + " of " + released.length, "watched so far"], [hrs + "h", "left to watch"], [units.length - released.length, "still to come"]].map(([n, l]) => h("div", { class: "stat" }, h("b", {}, n), h("span", {}, l)))));
+  const next = left[0];
+  if (next) {
+    const i = units.indexOf(next), prev = units[i - 1], after = units[i + 1], it = next.it, bd = it.poster;
+    const run = mcuRuns(units).find(r => r.units.includes(next)), rest = run.units.filter(u => mcuReleased(u) && !mcuIsW(u));
+    app.append(h("div", { class: "hero", style: bd ? "--bd:url('" + poster(bd, "w500") + "')" : "" }, h("div", { class: "in" },
+      h("div", {},
+        h("div", { class: "lab" }, "Next in your Marvel watch-through"),
+        h("h2", {}, it.title),
+        h("div", { class: "ep" }, next.kind === "m" ? "Movie" : code(next.s, next.e) + (next.name && !state.settings.spoiler ? " — " + next.name : "")),
+        h("div", { class: "small" }, "Released " + fmtDate(next.date) + (next.rt ? ", " + runtimeText(next.rt) : "")),
+        h("p", {}, (prev ? "Right after " + mcuLabel(prev) + ". " : "The very beginning. ") + (after ? "Then " + mcuLabel(after) + "." : "")),
+        h("div", { class: "formrow", style: "margin-top:12px" }, chipsFor(matchProviders((it.prov || []).map(name => ({ name })))), rest.length > 1 ? h("button", { class: "btn sm", onclick: () => mcuMark(rest, true) }, "Finish this stretch (" + rest.length + ")") : null)),
+      h("div", { class: "orbwrap" }, h("button", { class: "orb", "aria-label": "Mark watched", html: ICON.check, onclick: () => mcuMark([next], true) }), "Watched it"))));
+  } else app.append(h("div", { class: "empty" }, h("h2", {}, "You've seen it all so far"), h("p", {}, "New releases are added here automatically.")));
+  const runs = mcuRuns(units), startIdx = next ? runs.findIndex(r => r.units.includes(next)) : runs.length;
+  const view = state.mcuAll ? runs : runs.slice(startIdx + (next && runs[startIdx] && runs[startIdx].units.includes(next) && runs[startIdx].units.filter(mcuReleased).every(mcuIsW) ? 1 : 0), startIdx + state.mcuCount);
+  app.append(h("div", { class: "sechead" }, h("h2", { class: "sect" }, state.mcuAll ? "Full timeline" : "Coming up in your watch-through"), h("button", { class: "btn sm ghost", onclick: () => { state.mcuAll = !state.mcuAll; renderAll(); } }, state.mcuAll ? "Show just what's next" : "Show the full timeline")));
+  const list = h("div", { class: "qlist" }); let year = "";
+  view.forEach(r => { const y = r.units[0].date.slice(0, 4); if (state.mcuAll && y !== year) { year = y; list.append(h("h3", { class: "sect", style: "font-size:24px;margin:20px 0 4px" }, y)); } list.append(mcuRunEl(r, units)); });
+  app.append(list);
+  if (!state.mcuAll && runs.length > startIdx + state.mcuCount) app.append(h("div", { class: "disc-head", style: "margin-top:14px" }, h("button", { class: "btn", onclick: () => { state.mcuCount += 40; renderAll(); } }, "Show more")));
+  if (state.mcu.missing && state.mcu.missing.length) app.append(h("p", { class: "small", style: "margin-top:24px" }, "Couldn't find on TMDB: " + state.mcu.missing.join(", ") + ". They're left out for now."));
+  app.append(h("div", { class: "disc-head", style: "margin-top:20px" }, h("button", { class: "btn sm", disabled: state.mcuLoading, onclick: () => mcuLoad(true) }, state.mcuLoading ? "Refreshing…" : "Refresh release data")));
 }
 
 /* ---------- library ---------- */
@@ -1308,6 +1489,7 @@ async function boot() {
   try { loaded = await store.loadAll(); } catch (e) { console.error(e); toast("Couldn't load your list: " + (e.message || e)); }
   state.shows = loaded.shows.map(normalizeRow).filter(r => r.meta);
   state.settings = { ...DEFAULT_SETTINGS, ...(loaded.settings || {}) };
+  state.mcu = mcuRead();
   renderAll(); refreshStale(); if (!buzzFresh()) { state.buzzTried = true; refreshBuzz(false); }
   document.addEventListener("visibilitychange", async () => {
     if (document.hidden) return;
