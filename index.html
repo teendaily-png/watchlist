@@ -542,13 +542,13 @@ function markSeason(show, n, on) { for (const ep of allEps(show)) if (ep.s === n
 function toggleMovie(show, on) {
   const done = on === undefined ? show.status !== "completed" : on;
   show.status = done ? "completed" : "want";
-  if (done) show.last_watched = new Date().toISOString();
+  if (done) { show.last_watched = new Date().toISOString(); noteOther(); }
   persist(show); renderAll();
   if (done) toast("Watched " + show.meta.name + " ♡");
 }
 function afterWatch(show, on) {
   if (isMovie(show)) { persist(show); renderAll(); return; }
-  if (on) show.last_watched = new Date().toISOString();
+  if (on) { show.last_watched = new Date().toISOString(); noteOther(); }
   const st = stats(show);
   if (show.status === "want" && st.watched > 0) show.status = "watching";
   if (on && st.ended && st.aired === st.total && st.unwatched.length === 0 && show.status !== "completed") { show.status = "completed"; toast("Finished " + show.meta.name + " ♡ moved to Completed"); }
@@ -688,13 +688,13 @@ function heroEl(f, spoil, label) {
   const ov = spoil ? "" : (f.ep.ov || (mv ? (m.overview || "").slice(0, 220) : ""));
   return h("div", { class: "hero", style: bd ? "--bd:url('" + poster(bd, "w780") + "')" : "" }, h("div", { class: "in" },
     h("div", {},
-      h("div", { class: "lab" }, label),
+      h("div", { class: "lab" }, label + (f.show.mcu ? " · Marvel watch-through" : "")),
       h("h2", {}, m.name),
       h("div", { class: "ep" }, epLabel(f, spoil)),
       h("div", { class: "small" }, (mv ? "Released " : "Aired ") + fmtDate(f.ep.air) + (!mv && f.ep.rt ? ", " + runtimeText(f.ep.rt) : "")),
       ov ? h("p", {}, ov) : null,
-      h("div", { class: "formrow", style: "margin-top:12px" }, whereChip(f.show), h("button", { class: "btn sm", onclick: () => openDetail(f.show.id) }, "Open"))),
-    h("div", { class: "orbwrap" }, h("button", { class: "orb", "aria-label": "Mark watched", html: ICON.check, onclick: () => { if (mv) toggleMovie(f.show, true); else { setEp(f.show, f.ep.s, f.ep.e, true); afterWatch(f.show, true); } } }), "Watched it")));
+      h("div", { class: "formrow", style: "margin-top:12px" }, whereChip(f.show), h("button", { class: "btn sm", onclick: () => { if (f.show.mcu) { state.tab = "marvel"; renderAll(); } else openDetail(f.show.id); } }, f.show.mcu ? "Marvel tab" : "Open"))),
+    h("div", { class: "orbwrap" }, h("button", { class: "orb", "aria-label": "Mark watched", html: ICON.check, onclick: () => { if (f.show.mcu) mcuMarkThrough(f.show.mcuUnit); else if (mv) toggleMovie(f.show, true); else { setEp(f.show, f.ep.s, f.ep.e, true); afterWatch(f.show, true); } } }), "Watched it")));
 }
 function waitReason(s) {
   const a = avail(s), st = stats(s);
@@ -848,7 +848,7 @@ function mcuIsW(u) {
   const o = w["t:" + u.it.id]; return !!(o && o[u.s] && o[u.s].includes(u.e));
 }
 function mcuSetUnit(u, on) {
-  const w = mcuS().w; mcuS().started = true;
+  const w = mcuS().w; mcuS().started = true; if (on) mcuS().since = 0;
   if (u.kind === "m") { if (on) w["m:" + u.it.id] = 1; else delete w["m:" + u.it.id]; return; }
   const k = "t:" + u.it.id, o = w[k] || (w[k] = {}), set = new Set(o[u.s] || []);
   if (on) set.add(u.e); else set.delete(u.e);
@@ -1029,6 +1029,40 @@ function orderGroup(group, mode) {
   const done = group.filter(x => !stats(x.show).upcoming.length).sort(left).flatMap(x => x.eps);
   return airing.concat(done);
 }
+
+/* ---- Marvel lane in the queue ---- */
+function noteOther() { const m = mcuS(); m.since = (m.since || 0) + 1; saveSettings(); }
+function mcuPseudo(u) {
+  const it = u.it;
+  const show = { id: "mcu:" + it.key + (u.kind === "m" ? "" : ":" + u.s + ":" + u.e), mcu: true, mcuUnit: u, media: u.kind === "m" ? "movie" : "tv", status: "watching", flags: {}, rating: 0, watched: {},
+    meta: { name: it.title, poster: it.poster, backdrop: "", genres: [], cast: [], creators: [], networks: [], seasons: [], runtime: it.rt || 0, providers: { flatrate: (it.prov || []).map(name => ({ name })), rent: [], buy: [] } } };
+  return { show, ep: { s: u.s || 0, e: u.e || 0, name: u.name || "", air: u.date, rt: u.rt || 0, ov: "" } };
+}
+function mcuMarkThrough(u) { const units = mcuUnits(), i = units.findIndex(x => x.it.id === u.it.id && x.kind === u.kind && x.s === u.s && x.e === u.e); if (i >= 0) mcuMark(units.slice(0, i + 1), true); }
+function marvelItems() {
+  state.mcuBlocked = "";
+  const m = state.mcu ? mcuNext() : null; if (!m || !m.next) return [];
+  const { minutes, onlyMine } = state.settings, out = [];
+  for (const u of m.units.filter(x => mcuReleased(x) && !mcuIsW(x)).slice(0, 8)) {
+    const p = mcuPseudo(u);
+    if (onlyMine && avail(p.show).where === "other") { if (!out.length) state.mcuBlocked = u.it.title; break; }
+    if (minutes && u.rt && u.rt > minutes) break;
+    out.push(p);
+  }
+  return out;
+}
+const mcuPace = () => state.settings.mcuPace === undefined ? 3 : state.settings.mcuPace;
+function mixMarvel(main) {
+  const pace = mcuPace(); if (!pace || !state.mcu) return main;
+  const mv = marvelItems(); if (!mv.length) return main;
+  if (pace === 1) return mv.concat(main);
+  const out = []; let o = 0, k = 0, gap = Math.max(0, (pace - 1) - (mcuS().since || 0));
+  while (o < main.length || k < mv.length) {
+    if (k < mv.length && (gap <= 0 || o >= main.length)) { out.push(mv[k++]); gap = pace - 1; }
+    else { out.push(main[o++]); gap--; }
+  }
+  return out;
+}
 function buildQueue() {
   const { mode, minutes, onlyMine } = state.settings;
   const per = state.shows.filter(s => s.status === "watching" && !isMovie(s)).map(show => {
@@ -1038,7 +1072,7 @@ function buildQueue() {
   }).filter(x => x.eps.length);
   const other = onlyMine ? per.filter(x => avail(x.show).where === "other") : [];
   const main = per.filter(x => !other.includes(x));
-  return { main: orderGroup(main, mode).slice(0, 12), other: orderGroup(other, mode).slice(0, 8) };
+  return { main: mixMarvel(orderGroup(main, mode)).slice(0, 12), other: orderGroup(other, mode).slice(0, 8) };
 }
 function movieNight() {
   const { minutes, onlyMine } = state.settings;
@@ -1053,10 +1087,15 @@ function viewNext(app) {
   Object.keys(MODES).forEach(k => bar.append(h("button", { class: "chip", "aria-pressed": String(S.mode === k), onclick: () => { S.mode = k; saveSettings(); renderAll(); } }, MODES[k][0])));
   bar.append(h("select", { "aria-label": "Time available", onchange: e => { S.minutes = +e.target.value; saveSettings(); renderAll(); } },
     [[0, "Any length"], [30, "I have 30 min"], [45, "I have 45 min"], [60, "I have an hour"], [90, "I have 90 min"], [150, "I have 2.5 hours"]].map(([v, l]) => { const o = h("option", { value: v }, l); if (v === S.minutes) o.selected = true; return o; })));
+  if (state.mcu) bar.append(h("select", { "aria-label": "Marvel pace", onchange: e => { S.mcuPace = +e.target.value; saveSettings(); renderAll(); } },
+    [[0, "Marvel: off"], [4, "Marvel: light (1 in 4)"], [3, "Marvel: balanced (1 in 3)"], [2, "Marvel: heavy (1 in 2)"], [1, "Marvel: first"]].map(([v, l]) => { const o = h("option", { value: v }, l); if (v === mcuPace()) o.selected = true; return o; })));
   bar.append(h("label", { class: "check" }, h("input", { type: "checkbox", checked: S.onlyMine, onchange: e => { S.onlyMine = e.target.checked; saveSettings(); renderAll(); } }), "Only my services"));
-  app.append(bar, h("p", { class: "explain" }, MODES[S.mode][1], S.mode === "smart" ? h("span", { class: "rec" }, " Recommended.") : ""));
+  const pace = state.mcu ? mcuPace() : 0;
+  app.append(bar, h("p", { class: "explain" }, MODES[S.mode][1], S.mode === "smart" ? h("span", { class: "rec" }, " Recommended.") : "",
+    pace > 1 ? " Your Marvel watch-through gets one pick out of every " + pace + ", so it keeps moving without crowding out your other shows." : pace === 1 ? " Marvel picks come first." : ""));
 
   const { main, other } = buildQueue(), spoil = S.spoiler;
+  if (state.mcuBlocked && pace) app.append(h("p", { class: "small", style: "margin:-10px 0 18px" }, "Marvel is paused: " + state.mcuBlocked + " isn't on your services right now. Untick 'Only my services' to keep going in order."));
   if (!main.length) {
     app.append(h("div", { class: "empty" }, h("h2", {}, "You're all caught up"), h("p", {}, S.minutes ? "Nothing short enough right now. Try a longer slot." : "New episodes will land here as they air.")));
   } else {
@@ -1082,8 +1121,8 @@ function viewNext(app) {
 function queueItem(it, n, spoil, startBtn) {
   const mv = isMovie(it.show);
   return h("div", { class: "qi" }, h("div", { class: "qn" }, n), thumbOf(it.show),
-    h("div", { class: "t" }, h("b", {}, it.show.meta.name), h("span", { class: "small" }, epLabel(it, spoil) + (!mv && it.ep.rt ? " (" + runtimeText(it.ep.rt) + ")" : "")), h("div", { class: "row" }, whereChip(it.show))),
-    h("button", { class: "btn sm", title: mv ? "Mark as watched" : "Marks this episode and everything before it watched", onclick: () => { if (mv) toggleMovie(it.show, true); else { markThrough(it.show, it.ep.s, it.ep.e); afterWatch(it.show, true); } } }, startBtn ? "Start" : "✓"));
+    h("div", { class: "t" }, h("b", {}, it.show.meta.name), h("span", { class: "small" }, epLabel(it, spoil) + (!mv && it.ep.rt ? " (" + runtimeText(it.ep.rt) + ")" : "")), h("div", { class: "row" }, it.show.mcu ? h("span", { class: "tag hot" }, "Marvel") : null, whereChip(it.show))),
+    h("button", { class: "btn sm", title: mv ? "Mark as watched" : "Marks this episode and everything before it watched", onclick: () => { if (it.show.mcu) mcuMarkThrough(it.show.mcuUnit); else if (mv) toggleMovie(it.show, true); else { markThrough(it.show, it.ep.s, it.ep.e); afterWatch(it.show, true); } } }, startBtn ? "Start" : "✓"));
 }
 
 /* ---------- coming up ---------- */
